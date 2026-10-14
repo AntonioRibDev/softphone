@@ -1,0 +1,54 @@
+{
+  "name": "sip-softphone",
+  "version": "1.0.0",
+  "description": "Softphone SIP com interface web (JsSIP/WebRTC) que tambem roda como app desktop via Electron",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "http-server ./public -p 8080 -c-1 -o",
+    "serve": "http-server ./public -p 8080 -c-1",
+    "desktop": "electron .",
+    "desktop:dev": "electron . --dev",
+    "vendor": "browserify node_modules/jssip/lib/JsSIP.js --standalone JsSIP -o public/lib/jssip.min.js",
+    "dist": "electron-builder"
+  },
+  "keywords": [
+    "sip",
+    "softphone",
+    "webrtc",
+    "jssip",
+    "voip",
+    "freeswitch",
+    "electron"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "browserify": "^17.0.1",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "http-server": "^14.1.1"
+  },
+  "build": {
+    "appId": "com.softphone.sip",
+    "productName": "Softphone SIP",
+    "files": [
+      "electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "dependencies": {
+    "jssip": "^3.13.8"
+  }
+}

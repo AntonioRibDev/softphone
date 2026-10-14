@@ -1,0 +1,401 @@
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --panel-2: #273449;
+  --accent: #3b82f6;
+  --accent-2: #2563eb;
+  --green: #22c55e;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: #334155;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: linear-gradient(160deg, #0b1220, #0f172a 40%, #111c33);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand .logo { font-size: 28px; color: var(--accent); }
+.brand h1 { font-size: 22px; margin: 0; font-weight: 600; }
+.desktop-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: .5px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+  background: var(--panel);
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.status .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--muted);
+  transition: background .3s;
+}
+.status.connected .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status.connecting .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.status.error .dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card h2 { margin: 0 0 16px; font-size: 16px; font-weight: 600; }
+
+.config-card { grid-column: 1; }
+.phone-card { grid-column: 2; grid-row: 2 / 4; }
+.log-card { grid-column: 1; }
+
+/* Layout em grid da aba WebRTC */
+.phone-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+@media (max-width: 760px) {
+  .phone-grid { grid-template-columns: 1fr; }
+  .config-card, .phone-card, .log-card { grid-column: 1; grid-row: auto; }
+}
+
+/* Abas */
+.tabs {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+}
+.tab {
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 16px;
+  transition: color .2s, border-color .2s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Aba SIP UDP */
+.udp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .udp-grid { grid-template-columns: 1fr; }
+}
+.udp-unavailable p { color: var(--muted); line-height: 1.5; font-size: 14px; }
+.udp-unavailable code {
+  background: var(--panel-2); padding: 2px 6px; border-radius: 6px; font-size: 13px;
+}
+.udp-actions { display: flex; gap: 10px; margin: 4px 0 16px; }
+.udp-send { border-top: 1px solid var(--border); padding-top: 14px; }
+.udp-send .row { align-items: flex-end; }
+.udp-send .btn.small { margin-bottom: 14px; }
+.udp-note {
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+  border-top: 1px solid var(--border); padding-top: 12px; margin-bottom: 0;
+}
+
+.udp-log-card { min-height: 300px; }
+.udp-log {
+  margin-top: 12px;
+  max-height: 460px;
+  overflow-y: auto;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+.udp-log .entry {
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--border);
+  background: var(--panel-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.udp-log .entry.out { border-left-color: var(--accent); }
+.udp-log .entry.in { border-left-color: var(--green); }
+.udp-log .entry.log { border-left-color: var(--amber); background: transparent; }
+.udp-log .entry.error { border-left-color: var(--red); }
+.udp-log .entry .meta {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--muted); margin-bottom: 2px;
+}
+.udp-log .entry .arrow { font-weight: 700; }
+.udp-log .entry.out .arrow { color: var(--accent); }
+.udp-log .entry.in .arrow { color: var(--green); }
+.udp-log .raw { color: var(--text); opacity: .85; margin-top: 4px; }
+
+/* ===================== Logs SIP (tela unificada) ===================== */
+.siplog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.siplog-toolbar select,
+.siplog-toolbar input[type="text"] {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+.siplog-toolbar input[type="text"] { min-width: 220px; }
+.siplog-toolbar select:focus,
+.siplog-toolbar input[type="text"]:focus { border-color: var(--accent); }
+.checkbox.inline {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0; font-size: 13px; color: var(--muted);
+}
+.checkbox.inline input { width: auto; margin: 0; }
+.btn.link.active { color: var(--amber); }
+
+.siplog-count { color: var(--muted); font-size: 12px; margin: 10px 0 8px; }
+
+.siplog-list {
+  max-height: 62vh;
+  overflow-y: auto;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  background: #0b1220;
+}
+.sip-entry {
+  border-radius: 8px;
+  margin-bottom: 5px;
+  border-left: 3px solid var(--border);
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.sip-entry.out { border-left-color: var(--accent); }
+.sip-entry.in { border-left-color: var(--green); }
+.sip-entry.error { border-left-color: var(--red); }
+.sip-entry.info { border-left-color: var(--amber); }
+.sip-entry .meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+}
+.sip-entry .meta .left {
+  display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;
+}
+.sip-entry .badge {
+  font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  padding: 2px 6px; border-radius: 6px; color: #fff; flex-shrink: 0;
+}
+.sip-entry .badge.WSS { background: var(--accent); }
+.sip-entry .badge.UDP { background: #8b5cf6; }
+.sip-entry .arrow { font-weight: 700; flex-shrink: 0; }
+.sip-entry.out .arrow { color: var(--accent); }
+.sip-entry.in .arrow { color: var(--green); }
+.sip-entry.error .arrow { color: var(--red); }
+.sip-entry.info .arrow { color: var(--amber); }
+.sip-entry .summary {
+  color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sip-entry .time { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.sip-entry .raw {
+  display: none;
+  margin: 0; padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  white-space: pre-wrap; word-break: break-word;
+  color: var(--text); opacity: .9;
+  font-family: inherit; font-size: 12px;
+}
+.sip-entry.expanded .raw { display: block; }
+.siplog-list.show-raw .sip-entry .raw { display: block; }
+
+/* Formulario */
+form label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+form input[type="text"],
+form input[type="password"],
+form textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color .2s;
+}
+form input:focus, form textarea:focus { border-color: var(--accent); }
+form textarea { resize: vertical; font-family: inherit; }
+.row { display: flex; gap: 12px; }
+.row > label { flex: 1; }
+label.checkbox {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 24px;
+}
+label.checkbox input { width: auto; margin: 0; }
+
+.actions { display: flex; gap: 10px; margin-top: 4px; }
+
+/* Botoes */
+.btn {
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--panel-2);
+  transition: transform .08s, background .2s, opacity .2s;
+}
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary { background: var(--accent); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-2); }
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.btn.link { background: none; color: var(--accent); padding: 4px 8px; font-weight: 500; }
+.btn.call { background: var(--green); flex: 1; }
+.btn.hangup, .btn.reject { background: var(--red); flex: 1; }
+.btn.answer { background: var(--green); flex: 1; }
+.btn.small { padding: 8px 12px; font-size: 13px; }
+.btn.toggle.active { background: var(--accent); }
+.hidden { display: none !important; }
+
+/* Display do telefone */
+.display { margin-bottom: 16px; }
+#dialInput {
+  width: 100%;
+  padding: 14px;
+  font-size: 22px;
+  text-align: center;
+  letter-spacing: 1px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  outline: none;
+}
+#dialInput:focus { border-color: var(--accent); }
+.call-info {
+  text-align: center;
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--muted);
+  min-height: 18px;
+}
+.call-timer {
+  text-align: center;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  color: var(--green);
+  min-height: 24px;
+}
+
+/* Dialpad */
+.dialpad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.key {
+  cursor: pointer;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: background .15s, transform .08s;
+}
+.key small { font-size: 9px; color: var(--muted); letter-spacing: 1px; margin-top: 2px; }
+.key:hover { background: #31425c; }
+.key:active { transform: scale(.95); background: var(--accent); }
+
+.call-controls { display: flex; gap: 10px; margin-bottom: 12px; }
+.in-call-controls { display: flex; gap: 10px; justify-content: center; }
+
+/* Historico */
+.log-header { display: flex; align-items: center; justify-content: space-between; }
+.log-header h2 { margin: 0; }
+.call-log { list-style: none; margin: 12px 0 0; padding: 0; max-height: 260px; overflow-y: auto; }
+.call-log li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.call-log li:last-child { border-bottom: none; }
+.call-log .dir { font-size: 16px; width: 20px; text-align: center; }
+.call-log .dir.in { color: var(--green); }
+.call-log .dir.out { color: var(--accent); }
+.call-log .dir.missed { color: var(--red); }
+.call-log .num { flex: 1; font-weight: 500; }
+.call-log .time { color: var(--muted); font-size: 12px; }
+.call-log .empty { color: var(--muted); text-align: center; padding: 16px; }
+.call-log li button.redial {
+  background: none; border: none; color: var(--accent);
+  cursor: pointer; font-size: 16px;
+}

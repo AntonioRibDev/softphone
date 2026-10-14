@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Softphone SIP</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="logo">&#9742;</span>
+        <h1>Softphone SIP</h1>
+      </div>
+      <div class="status" id="regStatus">
+        <span class="dot" id="regDot"></span>
+        <span id="regText">Desconectado</span>
+      </div>
+    </header>
+
+    <!-- Abas -->
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="webrtc">WebRTC (WSS)</button>
+      <button class="tab" data-tab="udp">SIP UDP</button>
+      <button class="tab" data-tab="logs">Logs SIP</button>
+    </nav>
+
+    <!-- ===================== ABA WEBRTC ===================== -->
+    <div class="tab-panel active" id="tab-webrtc">
+      <div class="phone-grid">
+        <!-- Painel de configuracao / login SIP -->
+        <section class="card config-card" id="configCard">
+          <h2>Conta SIP</h2>
+          <form id="configForm" autocomplete="off">
+            <label>
+              Servidor WebSocket (WSS)
+              <input type="text" id="wsUri" placeholder="wss://pbx.exemplo.com:8089/ws" required />
+            </label>
+            <div class="row">
+              <label>
+                Usuário SIP
+                <input type="text" id="sipUser" placeholder="1001" required />
+              </label>
+              <label>
+                Domínio / Realm
+                <input type="text" id="sipDomain" placeholder="pbx.exemplo.com" required />
+              </label>
+            </div>
+            <label>
+              Senha
+              <input type="password" id="sipPassword" placeholder="••••••••" required />
+            </label>
+            <div class="row">
+              <label>
+                Nome de exibição (opcional)
+                <input type="text" id="displayName" placeholder="João Silva" />
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" id="rememberMe" checked />
+                Lembrar credenciais neste navegador
+              </label>
+            </div>
+            <label>
+              Servidores STUN/TURN (opcional, um por linha)
+              <textarea id="iceServers" rows="2" placeholder="stun:stun.l.google.com:19302"></textarea>
+            </label>
+            <div class="actions">
+              <button type="submit" class="btn primary" id="connectBtn">Conectar</button>
+              <button type="button" class="btn ghost" id="disconnectBtn" disabled>Desconectar</button>
+            </div>
+          </form>
+        </section>
+
+        <!-- Painel do telefone -->
+        <section class="card phone-card">
+          <div class="display">
+            <input type="text" id="dialInput" placeholder="Digite o número ou ramal" />
+            <div class="call-info" id="callInfo"></div>
+            <div class="call-timer" id="callTimer"></div>
+          </div>
+
+          <div class="dialpad" id="dialpad">
+            <button class="key" data-key="1">1<small>&nbsp;</small></button>
+            <button class="key" data-key="2">2<small>ABC</small></button>
+            <button class="key" data-key="3">3<small>DEF</small></button>
+            <button class="key" data-key="4">4<small>GHI</small></button>
+            <button class="key" data-key="5">5<small>JKL</small></button>
+            <button class="key" data-key="6">6<small>MNO</small></button>
+            <button class="key" data-key="7">7<small>PQRS</small></button>
+            <button class="key" data-key="8">8<small>TUV</small></button>
+            <button class="key" data-key="9">9<small>WXYZ</small></button>
+            <button class="key" data-key="*">*<small>&nbsp;</small></button>
+            <button class="key" data-key="0">0<small>+</small></button>
+            <button class="key" data-key="#">#<small>&nbsp;</small></button>
+          </div>
+
+          <div class="call-controls">
+            <button class="btn call" id="callBtn" title="Ligar" disabled>
+              <span class="icon">&#9742;</span> Ligar
+            </button>
+            <button class="btn hangup hidden" id="hangupBtn" title="Encerrar">
+              <span class="icon">&#9209;</span> Encerrar
+            </button>
+            <button class="btn answer hidden" id="answerBtn" title="Atender">
+              <span class="icon">&#9742;</span> Atender
+            </button>
+            <button class="btn reject hidden" id="rejectBtn" title="Recusar">
+              <span class="icon">&#10006;</span> Recusar
+            </button>
+          </div>
+
+          <div class="in-call-controls" id="inCallControls">
+            <button class="btn small toggle" id="muteBtn" title="Mudo">Mudo</button>
+            <button class="btn small toggle" id="holdBtn" title="Espera">Espera</button>
+            <button class="btn small" id="backspaceBtn" title="Apagar">&#9003;</button>
+          </div>
+        </section>
+
+        <!-- Historico de chamadas -->
+        <section class="card log-card">
+          <div class="log-header">
+            <h2>Histórico</h2>
+            <button class="btn link" id="clearLogBtn">Limpar</button>
+          </div>
+          <ul class="call-log" id="callLog"></ul>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===================== ABA SIP UDP ===================== -->
+    <div class="tab-panel" id="tab-udp">
+      <!-- Aviso quando rodando na web (sem suporte a UDP) -->
+      <div class="card udp-unavailable hidden" id="udpUnavailable">
+        <h2>SIP UDP indisponível no navegador</h2>
+        <p>
+          A conexão SIP sobre <strong>UDP</strong> só funciona no <strong>app desktop</strong>
+          (Electron), pois o navegador não permite abrir sockets UDP. Abra o softphone com
+          <code>npm run desktop</code> para usar esta aba.
+        </p>
+      </div>
+
+      <div class="udp-grid" id="udpGrid">
+        <!-- Configuracao UDP -->
+        <section class="card">
+          <h2>Conexão SIP UDP (cliente/servidor)</h2>
+          <form id="udpForm" autocomplete="off">
+            <div class="row">
+              <label>
+                Servidor (host/IP)
+                <input type="text" id="udpHost" placeholder="192.168.0.10" required />
+              </label>
+              <label style="max-width: 110px;">
+                Porta
+                <input type="text" id="udpPort" placeholder="5060" value="5060" />
+              </label>
+            </div>
+            <div class="row">
+              <label>
+                Usuário SIP
+                <input type="text" id="udpUser" placeholder="1001" required />
+              </label>
+              <label>
+                Domínio / Realm
+                <input type="text" id="udpDomain" placeholder="192.168.0.10" />
+              </label>
+            </div>
+            <label>
+              Senha
+              <input type="password" id="udpPassword" placeholder="••••••••" />
+            </label>
+            <div class="row">
+              <label>
+                Nome de exibição (opcional)
+                <input type="text" id="udpDisplayName" placeholder="João Silva" />
+              </label>
+              <label style="max-width: 120px;">
+                Porta local
+                <input type="text" id="udpLocalPort" placeholder="5070" value="5070" />
+              </label>
+              <label style="max-width: 120px;">
+                Expires (s)
+                <input type="text" id="udpExpires" placeholder="300" value="300" />
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="btn primary" id="udpStartBtn">Abrir socket</button>
+              <button type="button" class="btn ghost" id="udpStopBtn" disabled>Fechar</button>
+            </div>
+          </form>
+
+          <div class="udp-actions">
+            <button class="btn" id="udpRegisterBtn" disabled>Registrar</button>
+            <button class="btn ghost" id="udpUnregisterBtn" disabled>Remover registro</button>
+          </div>
+
+          <div class="udp-send">
+            <div class="row">
+              <label style="flex:1">
+                Destino (ramal/URI)
+                <input type="text" id="udpTarget" placeholder="1002 ou sip:1002@dominio" />
+              </label>
+              <button class="btn small" id="udpOptionsBtn" disabled title="Enviar OPTIONS">OPTIONS</button>
+            </div>
+            <label>
+              Texto (SIP MESSAGE)
+              <input type="text" id="udpMessageText" placeholder="Olá via SIP MESSAGE" />
+            </label>
+            <button class="btn small" id="udpMessageBtn" disabled>Enviar MESSAGE</button>
+          </div>
+
+          <p class="udp-note">
+            Esta aba trata apenas <strong>sinalização SIP</strong> (REGISTER, OPTIONS, MESSAGE e
+            respostas como servidor). <strong>Sem áudio RTP</strong> — para chamadas com voz use a aba WebRTC.
+          </p>
+        </section>
+
+        <!-- Log de mensagens SIP -->
+        <section class="card udp-log-card">
+          <div class="log-header">
+            <h2>Mensagens SIP</h2>
+            <div>
+              <label class="checkbox" style="margin:0 10px 0 0; display:inline-flex;">
+                <input type="checkbox" id="udpRawToggle" /> Mostrar bruto
+              </label>
+              <button class="btn link" id="udpClearLogBtn">Limpar</button>
+            </div>
+          </div>
+          <div class="udp-log" id="udpLog"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ===================== ABA LOGS SIP ===================== -->
+    <div class="tab-panel" id="tab-logs">
+      <section class="card">
+        <div class="log-header">
+          <h2>Logs SIP</h2>
+          <div class="siplog-toolbar">
+            <select id="sipLogSource" title="Filtrar por origem">
+              <option value="all">Todas as origens</option>
+              <option value="WSS">WebRTC (WSS)</option>
+              <option value="UDP">SIP UDP</option>
+            </select>
+            <input type="text" id="sipLogSearch" placeholder="Filtrar (método, ramal, texto...)" />
+            <label class="checkbox inline"><input type="checkbox" id="sipLogRaw" /> Bruto</label>
+            <label class="checkbox inline"><input type="checkbox" id="sipLogAuto" checked /> Auto-scroll</label>
+            <button class="btn link" id="sipLogPause">Pausar</button>
+            <button class="btn link" id="sipLogCopy">Copiar</button>
+            <button class="btn link" id="sipLogClear">Limpar</button>
+          </div>
+        </div>
+        <div class="siplog-count" id="sipLogCount">0 mensagem(ns)</div>
+        <div class="siplog-list" id="sipLogList"></div>
+        <p class="udp-note">
+          Mostra as mensagens SIP capturadas em tempo real: da aba <strong>WebRTC</strong>
+          (via WebSocket) e da aba <strong>SIP UDP</strong>. Clique em uma linha para ver o
+          conteúdo completo, ou marque <strong>Bruto</strong> para expandir todas.
+        </p>
+      </section>
+    </div>
+  </div>
+  <audio id="remoteAudio" autoplay></audio>
+  <audio id="ringtone" loop src="data:audio/wav;base64,"></audio>
+
+  <!-- Biblioteca JsSIP (local, funciona offline / no desktop) -->
+  <script src="lib/jssip.min.js"></script>
+  <script src="siplog.js"></script>
+  <script src="app.js"></script>
+  <script src="udp.js"></script>
+</body>
+</html>
