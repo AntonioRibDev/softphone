@@ -22,7 +22,17 @@ function setupSipUdpIpc() {
   };
 
   ipcMain.handle("sipudp:start", async (_e, config) => {
-    if (!sipUdp) sipUdp = new SipUdpClient(forward);
+    if (!sipUdp) {
+      sipUdp = new SipUdpClient(forward);
+      // PCM recebido do RTP -> envia ao renderer para reproducao.
+      sipUdp.setAudioSink((int16) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          // Envia uma copia do buffer (ArrayBuffer) ao renderer.
+          const copy = Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength);
+          mainWindow.webContents.send("sipudp:audio-in", copy);
+        }
+      });
+    }
     try {
       const info = await sipUdp.start(config);
       return { ok: true, info };
@@ -54,6 +64,34 @@ function setupSipUdpIpc() {
   ipcMain.handle("sipudp:message", async (_e, target, text) => {
     if (sipUdp) sipUdp.sendMessage(target, text);
     return { ok: true };
+  });
+
+  // ---- Chamadas de audio ----
+  ipcMain.handle("sipudp:call", async (_e, target) => {
+    if (sipUdp) await sipUdp.makeCall(target);
+    return { ok: true };
+  });
+  ipcMain.handle("sipudp:answer", async () => {
+    if (sipUdp) sipUdp.answer();
+    return { ok: true };
+  });
+  ipcMain.handle("sipudp:reject", async () => {
+    if (sipUdp) sipUdp.reject();
+    return { ok: true };
+  });
+  ipcMain.handle("sipudp:hangup", async () => {
+    if (sipUdp) sipUdp.hangup();
+    return { ok: true };
+  });
+
+  // ---- Audio: microfone (renderer -> RTP) ----
+  // Recebe ArrayBuffer com amostras PCM Int16 do renderer.
+  ipcMain.on("sipudp:audio-out", (_e, arrayBuffer) => {
+    if (!sipUdp || !arrayBuffer) return;
+    try {
+      const int16 = new Int16Array(arrayBuffer);
+      sipUdp.writeAudioFrame(int16);
+    } catch (err) { /* noop */ }
   });
 }
 

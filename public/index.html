@@ -194,6 +194,32 @@
             <button class="btn ghost" id="udpUnregisterBtn" disabled>Remover registro</button>
           </div>
 
+          <!-- Chamada de audio (RTP G.711) -->
+          <div class="udp-call">
+            <div class="row">
+              <label style="flex:1">
+                Ligar para (ramal/URI)
+                <input type="text" id="udpCallTarget" placeholder="1002 ou sip:1002@dominio" />
+              </label>
+            </div>
+            <div class="udp-call-controls">
+              <button class="btn call" id="udpCallBtn" disabled>
+                <span class="icon">&#9742;</span> Ligar
+              </button>
+              <button class="btn hangup hidden" id="udpHangupBtn">
+                <span class="icon">&#9209;</span> Encerrar
+              </button>
+              <button class="btn answer hidden" id="udpAnswerBtn">
+                <span class="icon">&#9742;</span> Atender
+              </button>
+              <button class="btn reject hidden" id="udpRejectBtn">
+                <span class="icon">&#10006;</span> Recusar
+              </button>
+            </div>
+            <div class="udp-call-status" id="udpCallStatus"></div>
+            <div class="udp-call-timer" id="udpCallTimer"></div>
+          </div>
+
           <div class="udp-send">
             <div class="row">
               <label style="flex:1">

@@ -166,7 +166,24 @@ Funcionalidades da aba:
 - Atua como **servidor (UAS)**: responde automaticamente a `OPTIONS`, `MESSAGE`, `INVITE`, `BYE` e `CANCEL` que chegam.
 - **Log ao vivo** das mensagens SIP enviadas/recebidas (com opção de ver o conteúdo bruto).
 
-> **Importante**: esta aba trata apenas **sinalização SIP**. Não há **áudio (RTP)** — uma chamada `INVITE` é respondida com `200 OK` apenas para você ver o fluxo, mas sem voz. Para chamadas com áudio, use a aba **WebRTC**, que conversa com o FreeSWITCH via WebSocket.
+### Chamadas com áudio (RTP G.711) na aba SIP UDP
+
+A aba SIP UDP faz **chamadas de voz reais sobre UDP**, com mídia RTP:
+
+- **Ligar**: digite o ramal/URI em "Ligar para" e clique em **Ligar** (`INVITE` com SDP, trata `407/401` com digest, `ACK`, e abre o áudio ao receber `200 OK`).
+- **Receber**: ao chegar um `INVITE`, aparecem **Atender** / **Recusar**.
+- **Encerrar**: `CANCEL` se ainda chamando, `BYE` se a chamada estiver ativa.
+- **Codec**: G.711 **PCMU** (µ-law) e **PCMA** (a-law), 8 kHz, quadros de 20 ms.
+- O áudio é capturado do microfone, codificado e enviado em RTP; o RTP recebido é decodificado e reproduzido (com um jitter buffer simples de ~60 ms).
+
+Fluxo de mídia:
+
+```
+Microfone -> WebAudio (8kHz) -> IPC -> main (G.711 + RTP) -> UDP -> FreeSWITCH
+FreeSWITCH -> UDP -> main (RTP + G.711) -> IPC -> WebAudio -> Alto-falante
+```
+
+> Observações: é uma implementação de RTP própria (sem DTLS/SRTP), feita para testes com FreeSWITCH/PBX em UDP. Suporta **uma chamada por vez** e **não** envia DTMF por RFC2833 (ainda). Para NAT/internet, o ideal continua sendo a aba WebRTC. Para áudio em LAN com o FreeSWITCH, a aba SIP UDP já funciona.
 
 ### Campos da aba SIP UDP
 
@@ -218,7 +235,8 @@ softphone/
 ├── electron/
 │   ├── main.js         # processo principal (janela, permissões, TLS de teste, IPC do SIP UDP)
 │   ├── preload.js      # ponte segura (window.softphoneDesktop, window.sipUdp)
-│   └── sip-udp.js      # stack SIP sobre UDP (REGISTER/OPTIONS/MESSAGE + UAS)
+│   ├── sip-udp.js      # stack SIP sobre UDP (REGISTER/OPTIONS/MESSAGE/INVITE + UAS)
+│   └── rtp-session.js  # mídia RTP + codec G.711 (PCMU/PCMA) e helpers de SDP
 └── public/             # interface compartilhada web + desktop
     ├── index.html      # abas WebRTC e SIP UDP
     ├── styles.css

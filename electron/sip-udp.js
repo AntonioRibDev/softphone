@@ -1,17 +1,20 @@
-/* Stack SIP sobre UDP minima para o processo principal do Electron.
-   Suporta: REGISTER (com digest MD5), OPTIONS, MESSAGE e atua como UAS
-   respondendo a requisicoes recebidas (OPTIONS/MESSAGE/INVITE/ACK/BYE).
-   Apenas sinalizacao - nao trata midia RTP.
+/* Stack SIP sobre UDP para o processo principal do Electron.
+   Suporta: REGISTER (digest MD5), OPTIONS, MESSAGE e chamadas de audio
+   (INVITE/ACK/BYE/CANCEL) com midia RTP G.711 via rtp-session.js.
+   Atua como UAC e UAS (faz e recebe chamadas).
 
    Emite eventos via callback onEvent({ type, ... }):
      - { type: 'status', state, text }
      - { type: 'sip', direction: 'out'|'in', message, summary }
      - { type: 'log', level, text }
-     - { type: 'message', from, body }   (SIP MESSAGE recebido)
+     - { type: 'message', from, body }            (SIP MESSAGE recebido)
+     - { type: 'call', state, ... }               (ciclo de vida da chamada)
+         state: 'calling'|'ringing'|'incoming'|'established'|'ended'
 */
 const dgram = require("dgram");
 const crypto = require("crypto");
 const os = require("os");
+const { RtpSession, buildSdp, parseSdp } = require("./rtp-session");
 
 function md5(str) {
   return crypto.createHash("md5").update(str).digest("hex");
@@ -48,6 +51,23 @@ class SipUdpClient {
     this.pending = new Map();
     // dialogos recebidos simples para responder BYE etc.
     this.serverDialogs = new Map();
+
+    // ---- Chamada / midia ----
+    this.rtp = null;          // RtpSession ativa
+    this.activeCall = null;   // estado da chamada corrente
+    this.audioSink = null;    // callback(pcmInt16) para PCM recebido do RTP
+    this.callTimer = null;
+  }
+
+  // Define para onde vai o audio recebido (PCM Int16) - usado pelo main para
+  // encaminhar ao renderer.
+  setAudioSink(fn) { this.audioSink = fn; }
+
+  // Recebe um quadro PCM Int16 do renderer (microfone) e envia como RTP.
+  writeAudioFrame(int16) {
+    if (this.rtp && this.activeCall && this.activeCall.state === "established") {
+      this.rtp.sendFrame(int16);
+    }
   }
 
   emit(ev) {
@@ -104,6 +124,10 @@ class SipUdpClient {
   }
 
   stop() {
+    if (this.activeCall) {
+      try { this.hangup(); } catch (e) { /* noop */ }
+    }
+    this._teardownMedia();
     if (this.registered) {
       try { this.unregister(); } catch (e) { /* noop */ }
     }
@@ -263,6 +287,219 @@ class SipUdpClient {
     return `sip:${target}@${this.config.domain}`;
   }
 
+  // ========================================================================
+  // CHAMADAS DE AUDIO (INVITE/ACK/BYE/CANCEL + RTP)
+  // ========================================================================
+
+  // Faz uma chamada de saida para o destino.
+  async makeCall(target) {
+    if (!this.socket) { this.log("error", "Inicie a conexao primeiro."); return; }
+    if (this.activeCall) { this.log("error", "Ja existe uma chamada em andamento."); return; }
+    const uri = this._targetUri(target);
+
+    // Abre a sessao RTP e monta a oferta SDP.
+    this.rtp = new RtpSession(
+      (pcm) => { if (this.audioSink) this.audioSink(pcm); },
+      (lvl, txt) => this.log(lvl, txt)
+    );
+    let rtpInfo;
+    try {
+      rtpInfo = await this.rtp.start();
+    } catch (e) {
+      this.log("error", "Nao foi possivel abrir RTP: " + e.message);
+      this.rtp = null;
+      return;
+    }
+
+    const sdp = buildSdp(this.localIp, rtpInfo.localPort);
+    this.cseq += 1;
+    const callId = randHex(12) + "@" + this.localIp;
+    const fromTag = randHex(6);
+
+    this.activeCall = {
+      direction: "out",
+      state: "calling",
+      callId: callId,
+      fromTag: fromTag,
+      toTag: null,
+      cseq: this.cseq,
+      uri: uri,
+      target: target,
+      remoteTarget: uri,
+      inviteBranch: null,
+      localRtpPort: rtpInfo.localPort,
+      startTime: null,
+    };
+
+    const req = this._buildCallRequest("INVITE", uri, {
+      callId: callId,
+      fromTag: fromTag,
+      cseq: this.cseq,
+      body: sdp,
+      contentType: "application/sdp",
+      extraHeaders: ["Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, MESSAGE"],
+    });
+    this.activeCall.inviteBranch = req.branch;
+    this.pending.set(req.branch, {
+      method: "INVITE", request: req, authed: false, uri, body: sdp, isCall: true,
+      callId: callId, fromTag: fromTag, cseq: this.cseq, branch: req.branch,
+    });
+
+    this.status("connecting", "Chamando " + target + "...");
+    this.emit({ type: "call", state: "calling", target: target, direction: "out" });
+    this.log("info", "INVITE para " + uri);
+    this.sendRaw(req.message);
+  }
+
+  // Monta uma requisicao de dialogo (INVITE/BYE/ACK) com tags de chamada.
+  _buildCallRequest(method, requestUri, opts) {
+    opts = opts || {};
+    const branch = opts.branch || ("z9hG4bK" + randHex(8));
+    const call = this.activeCall || {};
+    const fromTag = opts.fromTag || call.fromTag || this.fromTag;
+    const toHeader = opts.toHeader ||
+      (call.toTag ? `<${call.remoteTarget || requestUri}>;tag=${call.toTag}` : `<${requestUri}>`);
+    const dn = this.config.displayName ? `"${this.config.displayName}" ` : "";
+
+    const lines = [];
+    lines.push(`${method} ${requestUri} SIP/2.0`);
+    lines.push(`Via: SIP/2.0/UDP ${this.localIp}:${this.config.localPort};branch=${branch};rport`);
+    lines.push(`Max-Forwards: 70`);
+    lines.push(`From: ${dn}<${this.aor()}>;tag=${fromTag}`);
+    lines.push(`To: ${toHeader}`);
+    lines.push(`Call-ID: ${opts.callId || call.callId}`);
+    lines.push(`CSeq: ${opts.cseq} ${method}`);
+    lines.push(`Contact: ${this.contactUri()}`);
+    if (opts.authHeader) lines.push(opts.authHeader);
+    if (opts.extraHeaders) opts.extraHeaders.forEach((h) => lines.push(h));
+    lines.push(`User-Agent: Softphone-SIP-UDP/1.0`);
+    const body = opts.body || "";
+    if (body) lines.push(`Content-Type: ${opts.contentType || "application/sdp"}`);
+    lines.push(`Content-Length: ${Buffer.byteLength(body, "utf8")}`);
+    lines.push("");
+    lines.push(body);
+    return { message: lines.join("\r\n"), branch };
+  }
+
+  // Atende uma chamada recebida.
+  answer() {
+    const call = this.activeCall;
+    if (!call || call.direction !== "in" || call.state !== "ringing") {
+      this.log("error", "Nao ha chamada para atender.");
+      return;
+    }
+    const sdp = buildSdp(this.localIp, call.localRtpPort);
+    this._respondToInvite(call, 200, "OK", sdp);
+    call.state = "established";
+    call.startTime = Date.now();
+    this.status("connected", "Em chamada");
+    this.emit({ type: "call", state: "established", direction: "in", target: call.target });
+  }
+
+  // Recusa uma chamada recebida.
+  reject() {
+    const call = this.activeCall;
+    if (!call || call.direction !== "in") { return; }
+    this._respondToInvite(call, 486, "Busy Here");
+    this.log("info", "Chamada recusada.");
+    this._endCall("Chamada recusada");
+  }
+
+  // Encerra a chamada atual (CANCEL se ainda chamando, BYE se estabelecida).
+  hangup() {
+    const call = this.activeCall;
+    if (!call) return;
+
+    if (call.direction === "out" && call.state === "calling") {
+      // CANCEL para a transacao INVITE (mesmo branch/CSeq).
+      const cancel = this._buildCallRequest("CANCEL", call.uri, {
+        branch: call.inviteBranch,
+        callId: call.callId,
+        fromTag: call.fromTag,
+        cseq: call.cseq,
+        toHeader: `<${call.uri}>`,
+      });
+      this.log("info", "Enviando CANCEL.");
+      this.sendRaw(cancel.message);
+      // Aguarda 487; encerramos a midia ja.
+      this._endCall("Chamada cancelada");
+    } else if (call.state === "established") {
+      this.cseq += 1;
+      const bye = this._buildCallRequest("BYE", call.remoteTarget, {
+        callId: call.callId,
+        fromTag: call.fromTag,
+        cseq: this.cseq,
+      });
+      this.log("info", "Enviando BYE.");
+      this.sendRaw(bye.message);
+      this._endCall("Chamada encerrada");
+    } else if (call.direction === "in" && call.state === "ringing") {
+      this.reject();
+    } else {
+      this._endCall("Chamada encerrada");
+    }
+  }
+
+  // Responde a um INVITE recebido (com SDP opcional no 2xx).
+  _respondToInvite(call, code, reason, sdp) {
+    const req = call.inviteReq;
+    if (!req) return;
+    const lines = [];
+    lines.push(`SIP/2.0 ${code} ${reason}`);
+    (req.viaList || []).forEach((v) => lines.push("Via: " + v));
+    lines.push("From: " + this.headerValue(req.headers["from"]));
+    let to = this.headerValue(req.headers["to"]);
+    if (to && !/;tag=/.test(to)) to += ";tag=" + call.toTag;
+    lines.push("To: " + to);
+    lines.push("Call-ID: " + this.headerValue(req.headers["call-id"]));
+    lines.push("CSeq: " + this.headerValue(req.headers["cseq"]));
+    lines.push("Contact: " + this.contactUri());
+    const body = sdp || "";
+    if (body) lines.push("Content-Type: application/sdp");
+    lines.push("Content-Length: " + Buffer.byteLength(body, "utf8"));
+    lines.push("");
+    lines.push(body);
+    this.sendResponseTo(call.rinfo, lines.join("\r\n"));
+  }
+
+  // ACK para resposta 2xx de INVITE (nova transacao, vai ao Contact remoto).
+  _sendAck2xx(call) {
+    this.sendRaw(this._buildCallRequest("ACK", call.remoteTarget, {
+      callId: call.callId,
+      fromTag: call.fromTag,
+      cseq: call.cseq, // mesmo numero do INVITE
+    }).message);
+  }
+
+  // ACK para resposta nao-2xx (mesmo branch do INVITE).
+  _sendAckNon2xx(call, res) {
+    const toHeader = this.headerValue(res.headers["to"]);
+    const msg = this._buildCallRequest("ACK", call.uri, {
+      branch: call.inviteBranch,
+      callId: call.callId,
+      fromTag: call.fromTag,
+      cseq: call.cseq,
+      toHeader: toHeader,
+    }).message;
+    this.sendRaw(msg);
+  }
+
+  _teardownMedia() {
+    if (this.rtp) {
+      try { this.rtp.stop(); } catch (e) { /* noop */ }
+      this.rtp = null;
+    }
+  }
+
+  _endCall(reason) {
+    this._teardownMedia();
+    const call = this.activeCall;
+    this.activeCall = null;
+    this.emit({ type: "call", state: "ended", reason: reason || "", target: call ? call.target : "" });
+    if (this.registered) this.status("connected", "Registrado como " + this.config.user);
+    else this.status("idle", "Socket aberto (nao registrado)");
+  }
+
   // ---------- Recepcao ----------
   handleDatagram(msg, rinfo) {
     const text = msg.toString("utf8");
@@ -287,6 +524,12 @@ class SipUdpClient {
     const branch = this.extractBranch(res.headers["via"]);
     const tx = branch ? this.pending.get(branch) : null;
     const code = res.statusCode;
+
+    // Respostas de INVITE tem tratamento proprio (1xx/2xx/ACK/auth).
+    if (tx && tx.method === "INVITE") {
+      this._handleInviteResponse(res, tx, branch);
+      return;
+    }
 
     if ((code === 401 || code === 407) && tx && !tx.authed) {
       this.handleAuthChallenge(res, tx);
@@ -323,6 +566,114 @@ class SipUdpClient {
     }
 
     this.log("info", `Resposta ${code} ${res.reason}`);
+  }
+
+  _handleInviteResponse(res, tx, branch) {
+    const code = res.statusCode;
+    const call = this.activeCall;
+
+    // 1xx provisorio.
+    if (code >= 100 && code < 200) {
+      if (code === 180 || code === 183) {
+        if (call) call.state = "ringing";
+        this.status("connecting", "Tocando...");
+        this.emit({ type: "call", state: "ringing", direction: "out" });
+      }
+      return; // mantem a transacao pendente
+    }
+
+    // 2xx: chamada atendida.
+    if (code >= 200 && code < 300) {
+      this.pending.delete(branch);
+      if (!call) { return; }
+      // Captura tag remoto e Contact para ACK/BYE.
+      const toTag = this._extractTag(res.headers["to"]);
+      if (toTag) call.toTag = toTag;
+      const contact = this._extractContactUri(res.headers["contact"]);
+      if (contact) call.remoteTarget = contact;
+
+      // Negocia midia pelo SDP da resposta.
+      const sdp = parseSdp(res.body);
+      if (sdp && this.rtp) {
+        this.rtp.setRemote(sdp.ip, sdp.port, sdp.payloadType);
+      } else {
+        this.log("error", "Resposta sem SDP de audio valido.");
+      }
+
+      this._sendAck2xx(call);
+      call.state = "established";
+      call.startTime = Date.now();
+      this.status("connected", "Em chamada");
+      this.emit({ type: "call", state: "established", direction: "out", target: call.target });
+      return;
+    }
+
+    // 401/407: autentica e reenvia o INVITE (apos ACK da resposta).
+    if ((code === 401 || code === 407) && !tx.authed) {
+      this.pending.delete(branch);
+      this._sendAckNon2xx(call || { uri: tx.uri, inviteBranch: tx.branch, callId: tx.callId, fromTag: tx.fromTag, cseq: tx.cseq }, res);
+      this._reinviteWithAuth(res, tx);
+      return;
+    }
+
+    // Outros finais (>=300): ACK e encerra.
+    this.pending.delete(branch);
+    this._sendAckNon2xx(call || { uri: tx.uri, inviteBranch: tx.branch, callId: tx.callId, fromTag: tx.fromTag, cseq: tx.cseq }, res);
+    this.log("error", `Chamada falhou: ${code} ${res.reason}`);
+    if (this.activeCall) this._endCall(`Falha: ${code} ${res.reason}`);
+    else this._teardownMedia();
+  }
+
+  _reinviteWithAuth(res, tx) {
+    const isProxy = res.statusCode === 407;
+    const headerName = isProxy ? "proxy-authenticate" : "www-authenticate";
+    const challenge = this.parseAuth(res.headers[headerName]);
+    const call = this.activeCall;
+    if (!challenge || !call) { if (call) this._endCall("Falha de autenticacao"); return; }
+
+    const uri = tx.uri;
+    const authHeader = this._buildAuthHeader("INVITE", uri, challenge, isProxy);
+
+    this.cseq += 1;
+    call.cseq = this.cseq;
+    const req = this._buildCallRequest("INVITE", uri, {
+      callId: call.callId,
+      fromTag: call.fromTag,
+      cseq: this.cseq,
+      authHeader: authHeader,
+      body: tx.body,
+      contentType: "application/sdp",
+      toHeader: `<${uri}>`,
+      extraHeaders: ["Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, MESSAGE"],
+    });
+    call.inviteBranch = req.branch;
+    this.pending.set(req.branch, {
+      method: "INVITE", request: req, authed: true, uri, body: tx.body, isCall: true,
+      callId: call.callId, fromTag: call.fromTag, cseq: this.cseq, branch: req.branch,
+    });
+    this.log("info", "Reenviando INVITE autenticado.");
+    this.sendRaw(req.message);
+  }
+
+  // Monta o header Authorization/Proxy-Authorization para um metodo/uri.
+  _buildAuthHeader(method, uri, challenge, isProxy) {
+    const ha1 = md5(`${this.config.user}:${challenge.realm}:${this.config.password}`);
+    const ha2 = md5(`${method}:${uri}`);
+    let response, cnonce, nc;
+    if (challenge.qop && /auth/.test(challenge.qop)) {
+      cnonce = randHex(8);
+      nc = "00000001";
+      response = md5(`${ha1}:${challenge.nonce}:${nc}:${cnonce}:auth:${ha2}`);
+    } else {
+      response = md5(`${ha1}:${challenge.nonce}:${ha2}`);
+    }
+    let auth = `Digest username="${this.config.user}", realm="${challenge.realm}", ` +
+      `nonce="${challenge.nonce}", uri="${uri}", response="${response}", algorithm=MD5`;
+    if (challenge.qop && /auth/.test(challenge.qop)) {
+      auth += `, qop=auth, nc=${nc}, cnonce="${cnonce}"`;
+    }
+    if (challenge.opaque) auth += `, opaque="${challenge.opaque}"`;
+    return (isProxy ? "Proxy-Authorization: " : "Authorization: ") + auth;
   }
 
   handleAuthChallenge(res, tx) {
@@ -387,23 +738,111 @@ class SipUdpClient {
         break;
       }
       case "INVITE":
-        // Sinalizacao apenas: respondemos 200 OK sem midia real (sem RTP).
-        this.log("info", "INVITE recebido (sinalizacao apenas, sem RTP).");
-        this.respond(req, rinfo, 200, "OK");
+        this._handleIncomingInvite(req, rinfo);
         break;
       case "ACK":
-        // Sem acao.
+        // ACK confirma nosso 200 OK (chamada de entrada estabelecida).
+        if (this.activeCall && this.activeCall.direction === "in" && this.activeCall.state === "established") {
+          this.log("info", "ACK recebido, midia ativa.");
+        }
         break;
       case "BYE":
         this.respond(req, rinfo, 200, "OK");
         this.log("info", "BYE recebido, chamada encerrada.");
+        if (this.activeCall) this._endCall("Encerrada pelo outro lado");
         break;
       case "CANCEL":
         this.respond(req, rinfo, 200, "OK");
+        // Cancela um INVITE de entrada ainda tocando: responde 487 ao INVITE.
+        if (this.activeCall && this.activeCall.direction === "in" && this.activeCall.state === "ringing") {
+          this._respondToInvite(this.activeCall, 487, "Request Terminated");
+          this.log("info", "CANCEL recebido, chamada cancelada pelo chamador.");
+          this._endCall("Cancelada pelo chamador");
+        }
         break;
       default:
         this.respond(req, rinfo, 501, "Not Implemented");
     }
+  }
+
+  async _handleIncomingInvite(req, rinfo) {
+    // Ja ha chamada ativa? Ocupado.
+    if (this.activeCall) {
+      this._respondRawInvite(req, rinfo, 486, "Busy Here");
+      return;
+    }
+
+    const sdp = parseSdp(req.body);
+    if (!sdp) {
+      this.log("error", "INVITE recebido sem SDP de audio valido.");
+      this._respondRawInvite(req, rinfo, 488, "Not Acceptable Here");
+      return;
+    }
+
+    // Abre RTP e aponta para o ofertante.
+    this.rtp = new RtpSession(
+      (pcm) => { if (this.audioSink) this.audioSink(pcm); },
+      (lvl, txt) => this.log(lvl, txt)
+    );
+    let rtpInfo;
+    try {
+      rtpInfo = await this.rtp.start();
+    } catch (e) {
+      this.log("error", "Nao foi possivel abrir RTP: " + e.message);
+      this.rtp = null;
+      this._respondRawInvite(req, rinfo, 500, "Server Internal Error");
+      return;
+    }
+    this.rtp.setRemote(sdp.ip, sdp.port, sdp.payloadType);
+
+    const fromHeader = this.headerValue(req.headers["from"]);
+    const caller = this._callerId(fromHeader);
+
+    this.activeCall = {
+      direction: "in",
+      state: "ringing",
+      callId: this.headerValue(req.headers["call-id"]),
+      fromTag: this._extractTag(fromHeader),   // tag do chamador
+      toTag: randHex(6),                        // nosso tag
+      remoteTarget: this._extractContactUri(req.headers["contact"]) || sdp.ip,
+      inviteReq: req,
+      rinfo: rinfo,
+      localRtpPort: rtpInfo.localPort,
+      target: caller,
+    };
+
+    this._respondRawInvite(req, rinfo, 100, "Trying");
+    this._respondToInvite(this.activeCall, 180, "Ringing");
+    this.status("connecting", "Chamada recebida de " + caller);
+    this.emit({ type: "call", state: "incoming", direction: "in", from: caller });
+    this.log("info", "INVITE recebido de " + caller);
+  }
+
+  // Resposta simples a um INVITE (sem SDP) usando o req cru.
+  _respondRawInvite(req, rinfo, code, reason) {
+    const lines = [];
+    lines.push(`SIP/2.0 ${code} ${reason}`);
+    (req.viaList || []).forEach((v) => lines.push("Via: " + v));
+    lines.push("From: " + this.headerValue(req.headers["from"]));
+    let to = this.headerValue(req.headers["to"]);
+    if (to && !/;tag=/.test(to)) to += ";tag=" + randHex(6);
+    lines.push("To: " + to);
+    lines.push("Call-ID: " + this.headerValue(req.headers["call-id"]));
+    lines.push("CSeq: " + this.headerValue(req.headers["cseq"]));
+    lines.push("Content-Length: 0");
+    lines.push("");
+    lines.push("");
+    this.sendResponseTo(rinfo, lines.join("\r\n"));
+  }
+
+  _callerId(fromHeader) {
+    if (!fromHeader) return "desconhecido";
+    const dn = fromHeader.match(/^"?([^"<]*?)"?\s*</);
+    const uri = fromHeader.match(/sips?:([^@>;]+)/i);
+    const user = uri ? uri[1] : "";
+    const name = dn && dn[1].trim() ? dn[1].trim() : "";
+    if (name && user) return `${name} (${user})`;
+    return user || name || "desconhecido";
   }
 
   respond(req, rinfo, code, reason, extraHeaders) {
@@ -483,6 +922,21 @@ class SipUdpClient {
     if (!viaValue) return null;
     const m = viaValue.match(/branch=([^;,\s]+)/i);
     return m ? m[1] : null;
+  }
+
+  _extractTag(headerValue) {
+    if (!headerValue) return null;
+    const m = headerValue.match(/;tag=([^;,\s>]+)/i);
+    return m ? m[1] : null;
+  }
+
+  // Extrai a URI de um header Contact (ex.: "<sip:1001@1.2.3.4:5060>" -> sip:1001@1.2.3.4:5060)
+  _extractContactUri(headerValue) {
+    if (!headerValue) return null;
+    const m = headerValue.match(/<([^>]+)>/);
+    if (m) return m[1];
+    const m2 = headerValue.match(/(sips?:[^;,\s]+)/i);
+    return m2 ? m2[1] : null;
   }
 
   parseAuth(value) {

@@ -44,6 +44,14 @@
     log: $("udpLog"),
     rawToggle: $("udpRawToggle"),
     clearLogBtn: $("udpClearLogBtn"),
+    // Chamada
+    callTarget: $("udpCallTarget"),
+    callBtn: $("udpCallBtn"),
+    hangupBtn: $("udpHangupBtn"),
+    answerBtn: $("udpAnswerBtn"),
+    rejectBtn: $("udpRejectBtn"),
+    callStatus: $("udpCallStatus"),
+    callTimer: $("udpCallTimer"),
   };
 
   // Sem suporte a UDP (rodando no navegador): mostra aviso e encerra.
@@ -110,6 +118,27 @@
     els.messageBtn.disabled = !open;
     [els.host, els.port, els.user, els.domain, els.password, els.localPort, els.expires]
       .forEach((el) => { el.disabled = open; });
+    if (!open) showCallState("idle");
+    else showCallState("idle");
+  }
+
+  // ---------- Estado da UI de chamada ----------
+  function showCallState(state) {
+    const hide = (el) => el && el.classList.add("hidden");
+    const show = (el) => el && el.classList.remove("hidden");
+    hide(els.callBtn); hide(els.hangupBtn); hide(els.answerBtn); hide(els.rejectBtn);
+
+    if (state === "idle") {
+      show(els.callBtn);
+      els.callBtn.disabled = !socketOpen;
+    } else if (state === "calling" || state === "ringing") {
+      show(els.hangupBtn);
+    } else if (state === "incoming") {
+      show(els.answerBtn);
+      show(els.rejectBtn);
+    } else if (state === "established") {
+      show(els.hangupBtn);
+    }
   }
 
   // ---------- Status (reusa o indicador do topo) ----------
@@ -190,6 +219,9 @@
       case "log":
         addEntry(ev.level === "error" ? "error" : "log", ev.text, null, "&#8226;");
         break;
+      case "call":
+        onCallEvent(ev);
+        break;
     }
   });
 
@@ -225,6 +257,168 @@
     if (!text) { els.messageText.focus(); return; }
     api.message(els.target.value.trim(), text);
     els.messageText.value = "";
+  });
+
+  // ======================================================================
+  // AUDIO (WebAudio): captura do microfone -> RTP e reproducao do RTP
+  // ======================================================================
+  const FRAME = 160; // amostras por quadro (20 ms @ 8 kHz)
+  let audioCtx = null;
+  let micStream = null;
+  let micSource = null;
+  let micNode = null;
+  let muteGain = null;
+  let frameBuf = new Float32Array(FRAME);
+  let frameFill = 0;
+  let playTime = 0;
+  let audioActive = false;
+
+  function ensureAudioCtx() {
+    if (!audioCtx) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctor({ sampleRate: 8000 });
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  async function startAudio() {
+    if (audioActive) return;
+    try {
+      ensureAudioCtx();
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+      micSource = audioCtx.createMediaStreamSource(micStream);
+      micNode = audioCtx.createScriptProcessor(512, 1, 1);
+      frameFill = 0;
+      micNode.onaudioprocess = (e) => {
+        if (!audioActive) return;
+        const input = e.inputBuffer.getChannelData(0);
+        for (let i = 0; i < input.length; i++) {
+          frameBuf[frameFill++] = input[i];
+          if (frameFill === FRAME) {
+            sendFrame(frameBuf);
+            frameFill = 0;
+          }
+        }
+      };
+      // Conecta a um ganho zero para manter o processor ativo sem retorno de audio.
+      muteGain = audioCtx.createGain();
+      muteGain.gain.value = 0;
+      micSource.connect(micNode);
+      micNode.connect(muteGain);
+      muteGain.connect(audioCtx.destination);
+      playTime = 0;
+      audioActive = true;
+      addEntry("log", "Áudio ativo (captura + reprodução).", null, "&#128266;");
+    } catch (err) {
+      addEntry("error", "Falha ao acessar microfone: " + err.message, null, "&#8226;");
+    }
+  }
+
+  function sendFrame(f32) {
+    const i16 = new Int16Array(FRAME);
+    for (let i = 0; i < FRAME; i++) {
+      let s = f32[i];
+      s = s < -1 ? -1 : s > 1 ? 1 : s;
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    api.sendAudio(i16.buffer);
+  }
+
+  function stopAudio() {
+    audioActive = false;
+    try { if (micNode) { micNode.onaudioprocess = null; micNode.disconnect(); } } catch (e) { /* noop */ }
+    try { if (micSource) micSource.disconnect(); } catch (e) { /* noop */ }
+    try { if (muteGain) muteGain.disconnect(); } catch (e) { /* noop */ }
+    try { if (micStream) micStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* noop */ }
+    micNode = micSource = muteGain = micStream = null;
+    frameFill = 0;
+  }
+
+  // Reproducao do PCM recebido (ArrayBuffer de Int16) com jitter buffer simples.
+  api.onAudio((ab) => {
+    if (!audioActive || !audioCtx) return;
+    const int16 = new Int16Array(ab);
+    if (int16.length === 0) return;
+    const f32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+    const buf = audioCtx.createBuffer(1, f32.length, 8000);
+    buf.copyToChannel(f32, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    if (playTime < now + 0.02) playTime = now + 0.06; // ~60 ms de buffer
+    src.start(playTime);
+    playTime += buf.duration;
+  });
+
+  // ---------- Timer de chamada ----------
+  let callTimerInt = null;
+  function startCallTimer() {
+    const t0 = Date.now();
+    stopCallTimer();
+    callTimerInt = setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      els.callTimer.textContent =
+        String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    }, 500);
+  }
+  function stopCallTimer() {
+    clearInterval(callTimerInt);
+    callTimerInt = null;
+    els.callTimer.textContent = "";
+  }
+
+  // ---------- Eventos de chamada ----------
+  function onCallEvent(ev) {
+    switch (ev.state) {
+      case "calling":
+        els.callStatus.textContent = "Chamando " + (ev.target || "") + "...";
+        showCallState("calling");
+        break;
+      case "ringing":
+        els.callStatus.textContent = "Tocando...";
+        showCallState("ringing");
+        break;
+      case "incoming":
+        els.callStatus.textContent = "Chamada recebida de " + (ev.from || "desconhecido");
+        showCallState("incoming");
+        break;
+      case "established":
+        els.callStatus.textContent = "Em chamada";
+        showCallState("established");
+        startAudio();
+        startCallTimer();
+        break;
+      case "ended":
+        els.callStatus.textContent = ev.reason || "Chamada encerrada";
+        showCallState("idle");
+        stopAudio();
+        stopCallTimer();
+        setTimeout(() => { if (!callTimerInt) els.callStatus.textContent = ""; }, 4000);
+        break;
+    }
+  }
+
+  // ---------- Botoes de chamada ----------
+  els.callBtn.addEventListener("click", () => {
+    const target = els.callTarget.value.trim();
+    if (!target) { els.callTarget.focus(); return; }
+    ensureAudioCtx(); // gesto do usuario: libera o AudioContext
+    api.call(target);
+  });
+  els.hangupBtn.addEventListener("click", () => api.hangup());
+  els.answerBtn.addEventListener("click", () => { ensureAudioCtx(); api.answer(); });
+  els.rejectBtn.addEventListener("click", () => api.reject());
+  els.callTarget.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !els.callBtn.disabled && !els.callBtn.classList.contains("hidden")) {
+      e.preventDefault();
+      els.callBtn.click();
+    }
   });
 
   // ---------- Init ----------

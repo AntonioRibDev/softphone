@@ -49,6 +49,7 @@
     }
   },
   "dependencies": {
+    "alawmulaw": "^6.0.0",
     "jssip": "^3.13.8"
   }
 }
